@@ -1,0 +1,205 @@
+\documentclass[12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\geometry{margin=1in}
+
+\definecolor{codebg}{RGB}{240,240,240}
+\definecolor{keyword}{RGB}{0,0,180}
+\definecolor{comment}{RGB}{0,128,0}
+
+\lstdefinestyle{ruststyle}{
+    backgroundcolor=\color{codebg},
+    language=Rust,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{keyword}\bfseries,
+    commentstyle=\color{comment}\itshape,
+    breaklines=true,
+    frame=single,
+    showstringspaces=false,
+    tabsize=2
+}
+
+\title{Membrane Computation and Max-SMT in Rust}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Membrane Computation Overview}
+
+Membrane computation is a parallel computational framework where:
+
+\begin{itemize}
+    \item \textbf{Membranes} represent candidate solutions.
+    \item \textbf{Rules} transform membrane states (variables) iteratively.
+    \item \textbf{Environment} defines constraints.
+    \item \textbf{Evaluation} determines which membranes survive.
+\end{itemize}
+
+\subsection{Binary SMT Approach}
+Membranes are either \textbf{alive} if constraints are satisfied, or \textbf{dead} otherwise.
+
+\subsection{Max-SMT / Optimization Approach}
+Each membrane is assigned a \textbf{score} based on how many constraints it satisfies.
+Soft constraints contribute partially, while hard constraints can still eliminate membranes.
+
+\[
+\text{score}(M) = \sum_{i=1}^{n} w_i \cdot \text{sat}(c_i, M)
+\]
+
+where \(w_i\) is the weight of constraint \(c_i\) and \(\text{sat}(c_i, M)\) is the degree of satisfaction (0..1).
+
+\section{Rust Implementation}
+
+\subsection{Membrane and Constraint Structures}
+
+\begin{lstlisting}[style=ruststyle]
+use serde::Serialize;
+use std::collections::HashMap;
+
+#[derive(Serialize)]
+struct Membrane {
+    id: usize,
+    variables: HashMap<String, f64>,
+    score: f64,
+}
+
+#[derive(Clone)]
+struct Constraint {
+    name: String,
+    weight: f64,
+    limit: f64,
+    vars: Vec<String>,
+}
+
+impl Constraint {
+    fn satisfaction(&self, vars: &HashMap<String, f64>) -> f64 {
+        let sum: f64 = self.vars.iter().map(|v| *vars.get(v).unwrap_or(&0.0)).sum();
+        if sum <= self.limit {
+            1.0
+        } else {
+            self.limit / sum
+        }
+    }
+}
+\end{lstlisting}
+
+\subsection{Evaluate Membrane Scores}
+
+\begin{lstlisting}[style=ruststyle]
+fn evaluate_membrane(m: &mut Membrane, constraints: &[Constraint]) {
+    let mut total_score = 0.0;
+    for c in constraints {
+        total_score += c.weight * c.satisfaction(&m.variables);
+    }
+    m.score = total_score;
+}
+\end{lstlisting}
+
+\subsection{Generate and Rank Membranes}
+
+\begin{lstlisting}[style=ruststyle]
+fn main() -> std::io::Result<()> {
+    let constraints = vec![
+        Constraint { name: "c1".to_string(), weight: 1.0, limit: 10.0, vars: vec!["x".to_string(), "y".to_string()] },
+        Constraint { name: "c2".to_string(), weight: 2.0, limit: 5.0, vars: vec!["x".to_string()] },
+    ];
+
+    let mut membranes = vec![];
+    for i in 0..5 {
+        let mut vars = HashMap::new();
+        vars.insert("x".to_string(), i as f64 + 1.0);
+        vars.insert("y".to_string(), (5 - i) as f64);
+        let mut m = Membrane { id: i, variables: vars, score: 0.0 };
+        evaluate_membrane(&mut m, &constraints);
+        membranes.push(m);
+    }
+
+    membranes.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+
+    let json = serde_json::to_string_pretty(&membranes)?;
+    std::fs::write("membranes.json", json)?;
+    println!("JSON saved to membranes.json");
+
+    Ok(())
+}
+\end{lstlisting}
+
+\subsection{Example D3.js JSON Output}
+
+\begin{lstlisting}[style=ruststyle]
+[
+  {"id":0,"variables":{"x":1.0,"y":5.0},"score":3.9},
+  {"id":1,"variables":{"x":2.0,"y":4.0},"score":4.2}
+]
+\end{lstlisting}
+
+\section{Mutation Rules for Membranes}
+
+\begin{lstlisting}[style=ruststyle]
+use rand::Rng;
+
+impl Membrane {
+    fn mutate(&mut self, mutation_rate: f64, mutation_range: f64) {
+        let mut rng = rand::thread_rng();
+        for value in self.variables.values_mut() {
+            if rng.gen::<f64>() < mutation_rate {
+                let delta = rng.gen_range(-mutation_range..mutation_range);
+                *value += delta;
+            }
+        }
+    }
+}
+\end{lstlisting}
+
+\subsection{Using Mutation in Evolution Loop}
+
+\begin{lstlisting}[style=ruststyle]
+for generation in 0..10 {
+    for m in membranes.iter_mut() {
+        evaluate_membrane(m, &constraints);
+    }
+
+    membranes.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+
+    for m in membranes.iter_mut().skip(1) {
+        m.mutate(0.5, 1.0);
+    }
+}
+\end{lstlisting}
+
+\section{Visualization Notes}
+
+\begin{itemize}
+    \item Export membrane scores each generation to JSON.
+    \item Color nodes by score (heatmap/gradient).
+    \item Optional: animate over generations to see optimization progress.
+\end{itemize}
+
+\section{Summary}
+
+\begin{itemize}
+    \item Membrane computing provides a \textbf{parallel framework} for Max-SMT problems.
+    \item Ranking membranes by score supports \textbf{soft constraints} and \textbf{optimization}.
+    \item Mutation rules allow \textbf{exploration of solution space}.
+    \item D3.js JSON output enables \textbf{interactive visualization}.
+\end{itemize}
+
+This framework can be extended to:
+\begin{itemize}
+    \item Non-linear SMT constraints
+    \item Larger populations
+    \item Advanced selection and mutation strategies
+    \item Real-time interactive visualization
+\end{itemize}
+
+\end{document}
